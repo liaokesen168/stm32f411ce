@@ -1,0 +1,853 @@
+diff --git a/src/mcu/board/stm32f411xe_template/src/Makefile b/src/mcu/board/stm32f411xe_template/src/Makefile
+index fda09af..b1a6f30 100644
+--- a/src/mcu/board/stm32f411xe_template/src/Makefile
++++ b/src/mcu/board/stm32f411xe_template/src/Makefile
+@@ -4,3 +4,4 @@ SRC-y += stm32f4xx_it.c
+ SRC-y += device.c
+ SRC-y += i2c-dev.c
+ SRC-y += uart-dev.c
++SRC-y += rtc-dev.c
+\ No newline at end of file
+diff --git a/src/mcu/board/stm32f411xe_template/src/main.c b/src/mcu/board/stm32f411xe_template/src/main.c
+index 8f508fc..e9a1325 100644
+--- a/src/mcu/board/stm32f411xe_template/src/main.c
++++ b/src/mcu/board/stm32f411xe_template/src/main.c
+@@ -23,7 +23,7 @@ void printf_task(void *data) {
+ 	(void) data;
+ 	while (1) {
+ 		printf ("%s is called\n", __func__);
+-		msleep(1000);
++		msleep(5000);
+ 	}
+ 
+ }
+@@ -50,6 +50,7 @@ int main(void)
+ 	Uart_Init();
+ 	I2C_Init();
+ 	board_device_init();
++	Rtc_Init();
+ 	printf("Uart init ok\n");
+ 	/* thread demo */
+ 	print_task_handle = thread_create("print_thread", 512, printf_task, NULL);
+diff --git a/src/mcu/board/stm32f411xe_template/src/main.h b/src/mcu/board/stm32f411xe_template/src/main.h
+index 95a8666..4beda6a 100755
+--- a/src/mcu/board/stm32f411xe_template/src/main.h
++++ b/src/mcu/board/stm32f411xe_template/src/main.h
+@@ -6,6 +6,11 @@
+ #include "stdio.h"
+ #include <FreeRTOS.h>
+ #include <task.h>
++#include <drivers/rtc.h>
++
++#define PWR_LOWPOWERREGULATOR_ON                    PWR_CR_LPDS
++
++extern RTC_HandleTypeDef RtcHandle;
+ 
+ extern void xPortSysTickHandler(void );
+ extern void EXTI15_10_IRQCallFunc(void );
+diff --git a/src/mcu/board/stm32f411xe_template/src/rtc-dev.c b/src/mcu/board/stm32f411xe_template/src/rtc-dev.c
+new file mode 100644
+index 0000000..bdf386d
+--- /dev/null
++++ b/src/mcu/board/stm32f411xe_template/src/rtc-dev.c
+@@ -0,0 +1,35 @@
++#include <drivers/rtc.h>
++#include "device.h"
++
++struct rtc_stm32_device rtc_alarm_device;
++
++
++/**
++ *  @brief  This function is executed init RTC_Alarm.
++ * 	@param  None
++ * 	@retval None
++ */
++static void stm32_rtc_alarm_init(void)
++{
++	rtc_alarm_device.Handle.Instance = RTC;
++	rtc_alarm_device.Handle.Init.HourFormat = RTC_HOURFORMAT_24;
++	rtc_alarm_device.Handle.Init.AsynchPrediv = RTC_ASYNCH_PREDIV;
++	rtc_alarm_device.Handle.Init.SynchPrediv = RTC_SYNCH_PREDIV;
++	rtc_alarm_device.Handle.Init.OutPut = RTC_OUTPUT_ALARMA;
++	rtc_alarm_device.Handle.Init.OutPutPolarity = RTC_OUTPUT_POLARITY_HIGH;
++	rtc_alarm_device.Handle.Init.OutPutType = RTC_OUTPUT_TYPE_OPENDRAIN;
++
++	rtc_stm32_common_init(&rtc_alarm_device, &rtc_pm_ops);
++}
++
++/**
++ *  @brief  This function is executed init RTC port.
++ * 	@param  None
++ * 	@retval None
++ */
++int Rtc_Init(void)
++{
++	stm32_rtc_alarm_init();
++
++	return 0;
++}
+diff --git a/src/mcu/board/stm32f411xe_template/src/stm32f4xx_it.c b/src/mcu/board/stm32f411xe_template/src/stm32f4xx_it.c
+index 5b422f3..08895c8 100755
+--- a/src/mcu/board/stm32f411xe_template/src/stm32f4xx_it.c
++++ b/src/mcu/board/stm32f411xe_template/src/stm32f4xx_it.c
+@@ -187,6 +187,11 @@ void EXTI15_10_IRQHandler(void)
+ 	EXTI15_10_IRQCallFunc();
+ }
+ 
++void RTC_Alarm_IRQHandler(void)
++{
++	HAL_RTC_AlarmIRQHandler(&rtc_alarm_device.Handle);
++}
++
+ /**
+   * @brief  This function handles PPP interrupt request.
+   * @param  None
+diff --git a/src/mcu/drivers/rtc/Makefile b/src/mcu/drivers/rtc/Makefile
+new file mode 100644
+index 0000000..6c230f1
+--- /dev/null
++++ b/src/mcu/drivers/rtc/Makefile
+@@ -0,0 +1,3 @@
++SRC-y += rtc-core.c
++SRC-y += rtc-stm32.c
++SRC-y += rtc-stm32f4xx_msp.c
+diff --git a/src/mcu/drivers/rtc/rtc-core.c b/src/mcu/drivers/rtc/rtc-core.c
+new file mode 100644
+index 0000000..b70aa4e
+--- /dev/null
++++ b/src/mcu/drivers/rtc/rtc-core.c
+@@ -0,0 +1,63 @@
++#include <os.h>
++#include <drivers/rtc.h>
++
++int rtc_read_tm(struct rtc_device *rtc, struct rtc_time *tm)
++{
++	assert(rtc->ops->read_time);
++
++	return rtc->ops->read_time(rtc, tm);
++}
++
++int rtc_set_time(struct rtc_device *rtc, struct rtc_time *tm)
++{
++	assert(rtc->ops->set_time);
++
++	return rtc->ops->set_time(rtc, tm);
++}
++
++void rtc_time_to_tm(struct rtc_device *rtc, uint64_t time, struct rtc_time *tm)
++{
++	assert(rtc->ops->time_to_tm);
++
++	rtc->ops->time_to_tm(time, tm);
++}
++
++int rtc_tm_to_time(struct rtc_device *rtc, struct rtc_time *tm, uint64_t *time)
++{
++	assert(rtc->ops->tm_to_time);
++
++	return rtc->ops->tm_to_time(tm, time);
++}
++
++void rtc_read_times(struct rtc_device *rtc, uint64_t *seconds, uint32_t *sub_second)
++{
++	assert(rtc->ops->read_times);
++
++	rtc->ops->read_times(rtc, seconds, sub_second);
++}
++
++int rtc_set_alarm_after_mseconds(struct rtc_device *rtc, uint64_t milliseconds, void *callback)
++{
++	assert(rtc->ops->set_alarm_after_mseconds);
++
++	return rtc->ops->set_alarm_after_mseconds(rtc, milliseconds, callback);
++}
++
++int rtc_set_alarm_by_rtc_time(struct rtc_device *rtc, struct rtc_time *tm, void *callback)
++{
++	assert(rtc->ops->set_alarm_by_rtc_time);
++
++	return rtc->ops->set_alarm_by_rtc_time(rtc, tm , callback);
++}
++
++int rtc_set_alarm_after_seconds(struct rtc_device *rtc, uint64_t seconds, void *callback)
++{
++	assert(rtc->ops->set_alarm_after_seconds);
++
++	return rtc->ops->set_alarm_after_seconds(rtc, seconds, callback);
++}
++
++void rtc_dev_init(struct rtc_device *device, struct rtc_class_ops *ops)
++{
++	device->ops = ops;
++}
+diff --git a/src/mcu/drivers/rtc/rtc-stm32.c b/src/mcu/drivers/rtc/rtc-stm32.c
+new file mode 100644
+index 0000000..d99b79e
+--- /dev/null
++++ b/src/mcu/drivers/rtc/rtc-stm32.c
+@@ -0,0 +1,337 @@
++#include <os.h>
++#include <drivers/rtc.h>
++
++static void Error_Handler(void);
++
++#define LEAPS_THRU_END_OF(y) ((y)/4 - (y)/100 + (y)/400)
++
++static const unsigned char rtc_days_in_month[] = {
++	31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31
++};
++
++static inline uint32_t is_leap_year(uint32_t year)
++{
++	return (!(year % 4) && (year % 100)) || !(year % 400);
++}
++
++static int rtc_month_days(uint32_t month, uint32_t year)
++{
++	return rtc_days_in_month[month] + (is_leap_year(year) && month == 1);
++}
++
++static int stm32_rtc_read_tm(struct rtc_device *rtc, struct rtc_time *tm)
++{
++	struct rtc_stm32_device *dev = (struct rtc_stm32_device *)rtc;
++	RTC_DateTypeDef sdatestructureget;
++	RTC_TimeTypeDef stimestructureget;
++
++	/* Get the RTC current Time */
++	HAL_RTC_GetTime(&dev->Handle, &stimestructureget, RTC_FORMAT_BIN);
++	/* Get the RTC current Date */
++	HAL_RTC_GetDate(&dev->Handle, &sdatestructureget, RTC_FORMAT_BIN);
++
++	tm->tm_sec = stimestructureget.Seconds;
++	tm->tm_min = stimestructureget.Minutes;
++	tm->tm_hour = stimestructureget.Hours;
++	tm->tm_wday = sdatestructureget.WeekDay;
++	tm->tm_mday = sdatestructureget.Date;
++	tm->tm_mon = sdatestructureget.Month;
++	tm->tm_year = sdatestructureget.Year + 2000;
++
++	return 0;
++}
++
++static int stm32_rtc_set_time(struct rtc_device *rtc, struct rtc_time *tm)
++{
++	struct rtc_stm32_device *dev = (struct rtc_stm32_device *)rtc;
++
++	RTC_DateTypeDef sdatestructure;
++	RTC_TimeTypeDef stimestructure;
++
++	/* Set Date */
++	sdatestructure.Year = RTC_ByteToBcd2(tm->tm_year - 2000);
++	sdatestructure.Month = RTC_ByteToBcd2(tm->tm_mon);
++	sdatestructure.Date = RTC_ByteToBcd2(tm->tm_mday);
++	sdatestructure.WeekDay = RTC_ByteToBcd2(tm->tm_wday);
++
++	if(HAL_RTC_SetDate(&dev->Handle, &sdatestructure, RTC_FORMAT_BCD) != HAL_OK)
++	{
++		/* Error */
++		Error_Handler();
++		return -1;
++	}
++
++	/* Set Time */
++	stimestructure.Hours = RTC_ByteToBcd2(tm->tm_hour);
++	stimestructure.Minutes = RTC_ByteToBcd2(tm->tm_min);
++	stimestructure.Seconds = RTC_ByteToBcd2(tm->tm_sec);
++	stimestructure.TimeFormat = RTC_HOURFORMAT12_AM;
++	stimestructure.DayLightSaving = RTC_DAYLIGHTSAVING_NONE;
++	stimestructure.StoreOperation = RTC_STOREOPERATION_RESET;
++
++	if (HAL_RTC_SetTime(&dev->Handle, &stimestructure, RTC_FORMAT_BCD)
++			!= HAL_OK) {
++		/* Error */
++		Error_Handler();
++		return -1;
++	}
++
++	/*###########-3- Writes a data in a RTC Backup data Register0 #############*/
++	HAL_RTCEx_BKUPWrite(&dev->Handle, RTC_BKP_DR0, 0x32F2);
++
++	return 0;
++}
++
++/* Converts Gregorian date to seconds since 1970-01-01 00:00:00.
++ * Assumes input in normal date format, i.e. 1980-12-31 23:59:59
++ * => year=1980, mon=12, day=31, hour=23, min=59, sec=59.
++ *
++ * [For the Julian calendar (which was used in Russia before 1917,
++ * Britain & colonies before 1752, anywhere else before 1582,
++ * and is still in use by some communities) leave out the
++ * -year/100+year/400 terms, and add 10.]
++ *
++ * This algorithm was first published by Gauss (I think).
++ *
++ * WARNING: this function will overflow on 2106-02-07 06:28:16 on
++ * machines where long is 32-bit! (However, as time_t is signed, we
++ * will already get problems at other places on 2038-01-19 03:14:08)
++ */
++static uint64_t
++mktime(const uint32_t year0, const uint32_t mon0,
++       const uint32_t day, const uint32_t hour,
++       const uint32_t min, const uint32_t sec)
++{
++	uint32_t mon = mon0, year = year0;
++
++	/* 1..12 -> 11,12,1..10 */
++	if (0 >= (int) (mon -= 2)) {
++		mon += 12;	/* Puts Feb last since it has leap day */
++		year -= 1;
++	}
++
++	return ((((uint64_t)
++		  (year/4 - year/100 + year/400 + 367*mon/12 + day) +
++		  year*365 - 719499
++	    )*24 + hour /* now have hours */
++	  )*60 + min /* now have minutes */
++	)*60 + sec; /* finally seconds */
++}
++
++/*
++ * Convert seconds since 01-01-1970 00:00:00 to Gregorian date.
++ */
++static void stm32_rtc_time_to_tm(uint64_t time, struct rtc_time *tm)
++{
++	uint32_t month, year;
++	int days;
++
++	days = time / 86400;
++	time -= (uint32_t) days * 86400;
++
++	/* day of the week, 1970-01-01 was a Thursday */
++	tm->tm_wday = (days + 4) % 7;
++
++	year = 1970 + days / 365;
++	days -= (year - 1970) * 365
++		+ LEAPS_THRU_END_OF(year - 1)
++		- LEAPS_THRU_END_OF(1970 - 1);
++	if (days < 0) {
++		year -= 1;
++		days += 365 + is_leap_year(year);
++	}
++	tm->tm_year = year;
++	tm->tm_yday = days + 1;
++
++	for (month = 0; month < 11; month++) {
++		int newdays;
++
++		newdays = days - rtc_month_days(month, year);
++		if (newdays < 0)
++			break;
++		days = newdays;
++	}
++	tm->tm_mon = month + 1;
++	tm->tm_mday = days + 1;
++
++	tm->tm_hour = time / 3600;
++	time -= tm->tm_hour * 3600;
++	tm->tm_min = time / 60;
++	tm->tm_sec = time - tm->tm_min * 60;
++}
++
++/*
++ * Convert Gregorian date to seconds since 01-01-1970 00:00:00.
++ */
++static int stm32_rtc_tm_to_time(struct rtc_time *tm, uint64_t *time)
++{
++	*time = mktime(tm->tm_year, tm->tm_mon, tm->tm_mday,
++			tm->tm_hour, tm->tm_min, tm->tm_sec);
++	return 0;
++}
++
++static void stm32_rtc_read_times(struct rtc_device *rtc, uint64_t *seconds, uint32_t *sub_second)
++{
++	struct rtc_stm32_device *dev = (struct rtc_stm32_device *)rtc;
++	RTC_DateTypeDef sdatestructureget;
++	RTC_TimeTypeDef stimestructureget;
++	struct rtc_time tm;
++
++	/* Get the RTC current Time */
++	HAL_RTC_GetTime(&dev->Handle, &stimestructureget, RTC_FORMAT_BIN);
++	/* Get the RTC current Date */
++	HAL_RTC_GetDate(&dev->Handle, &sdatestructureget, RTC_FORMAT_BIN);
++
++	tm.tm_sec = stimestructureget.Seconds;
++	tm.tm_min = stimestructureget.Minutes;
++	tm.tm_hour = stimestructureget.Hours;
++	tm.tm_wday = sdatestructureget.WeekDay;
++	tm.tm_mday = sdatestructureget.Date;
++	tm.tm_mon = sdatestructureget.Month;
++	tm.tm_year = sdatestructureget.Year + 2000;
++
++	stm32_rtc_tm_to_time(&tm, seconds);
++	*sub_second = stimestructureget.SubSeconds;
++}
++
++void (*alarm_callback)(RTC_HandleTypeDef *hrtc);
++void (*stm32_set_alarm_by_rtc_time_real_callback)(void);
++struct rtc_time alarmA_time;
++void HAL_RTC_AlarmAEventCallback(RTC_HandleTypeDef *hrtc)
++{
++	alarm_callback(hrtc);
++}
++
++void stm32_set_alarm_by_rtc_time_callback(RTC_HandleTypeDef *hrtc)
++{
++	RTC_DateTypeDef sdatestructureget;
++	RTC_TimeTypeDef stimestructureget;
++
++	/* Get the RTC current Time */
++	HAL_RTC_GetTime(hrtc, &stimestructureget, RTC_FORMAT_BIN);
++	/* Get the RTC current Date */
++	HAL_RTC_GetDate(hrtc, &sdatestructureget, RTC_FORMAT_BIN);
++
++	if ((uint32_t)(sdatestructureget.Year + 2000) == alarmA_time.tm_year
++			&& (uint32_t)sdatestructureget.Month == alarmA_time.tm_mon) {
++		stm32_set_alarm_by_rtc_time_real_callback();
++	}
++}
++
++static int stm32_rtc_set_alarm_after_mseconds(struct rtc_device *rtc, uint64_t milliseconds, void *callback)
++{
++	uint32_t seconds, m_seconds, sub_second;
++	uint64_t alarm_second;
++	struct rtc_time tm;
++	RTC_TimeTypeDef stimestructureget;
++	RTC_DateTypeDef sdatestructureget;
++	RTC_AlarmTypeDef salarmstructure;
++
++	struct rtc_stm32_device *dev = (struct rtc_stm32_device *)rtc;
++
++	HAL_RTC_GetTime(&dev->Handle, &stimestructureget, RTC_FORMAT_BIN);
++	HAL_RTC_GetDate(&dev->Handle, &sdatestructureget, RTC_FORMAT_BIN);
++
++	seconds = milliseconds / 1000;
++	m_seconds = milliseconds % 1000;
++
++	tm.tm_year = sdatestructureget.Year + 2000;
++	tm.tm_mon = sdatestructureget.Month;
++	tm.tm_mday = sdatestructureget.Date;
++	tm.tm_hour = stimestructureget.Hours;
++	tm.tm_min = stimestructureget.Minutes;
++	tm.tm_sec = stimestructureget.Seconds;
++
++	if((stimestructureget.SubSeconds / config_RTC_SSR_HZ) >= m_seconds)
++		sub_second = stimestructureget.SubSeconds - (config_RTC_SSR_HZ / 1000) * m_seconds;
++	else {
++		sub_second = config_RTC_SSR_HZ - ((config_RTC_SSR_HZ / 1000) * m_seconds - stimestructureget.SubSeconds);
++		seconds++;
++	}
++
++	stm32_rtc_tm_to_time(&tm, &alarm_second);
++	alarm_second += seconds;
++	stm32_rtc_time_to_tm(alarm_second, &tm);
++
++	salarmstructure.Alarm = RTC_ALARM_A;
++	salarmstructure.AlarmDateWeekDay = RTC_ByteToBcd2(tm.tm_mday);
++	salarmstructure.AlarmDateWeekDaySel = RTC_ALARMDATEWEEKDAYSEL_DATE;
++	salarmstructure.AlarmMask = RTC_ALARMMASK_NONE;
++	salarmstructure.AlarmSubSecondMask = RTC_ALARMSUBSECONDMASK_ALL;
++	salarmstructure.AlarmTime.TimeFormat = RTC_HOURFORMAT12_AM;
++	salarmstructure.AlarmTime.Hours = RTC_ByteToBcd2(tm.tm_hour);
++	salarmstructure.AlarmTime.Minutes = RTC_ByteToBcd2(tm.tm_min);
++	salarmstructure.AlarmTime.Seconds = RTC_ByteToBcd2(tm.tm_sec);
++	salarmstructure.AlarmTime.SubSeconds = sub_second;
++
++	HAL_RTC_SetAlarm_IT(&dev->Handle, &salarmstructure, RTC_FORMAT_BCD);
++
++	alarmA_time.tm_year = tm.tm_year;
++	alarmA_time.tm_mon = tm.tm_mon;
++
++	alarm_callback = stm32_set_alarm_by_rtc_time_callback;
++	stm32_set_alarm_by_rtc_time_real_callback = callback;
++
++	return 0;
++}
++
++static int stm32_set_alarm_by_rtc_time(struct rtc_device *rtc, struct rtc_time *tm, void *callback)
++{
++	struct rtc_stm32_device *dev = (struct rtc_stm32_device *)rtc;
++
++	RTC_AlarmTypeDef salarmstructure;
++
++	salarmstructure.Alarm = RTC_ALARM_A;
++	salarmstructure.AlarmDateWeekDay = RTC_ByteToBcd2(tm->tm_mday);
++	salarmstructure.AlarmDateWeekDaySel = RTC_ALARMDATEWEEKDAYSEL_DATE;
++	salarmstructure.AlarmMask = RTC_ALARMMASK_NONE;
++	salarmstructure.AlarmSubSecondMask = RTC_ALARMSUBSECONDMASK_ALL;
++	salarmstructure.AlarmTime.TimeFormat = RTC_HOURFORMAT12_AM;
++	salarmstructure.AlarmTime.Hours = RTC_ByteToBcd2(tm->tm_hour);
++	salarmstructure.AlarmTime.Minutes = RTC_ByteToBcd2(tm->tm_min);
++	salarmstructure.AlarmTime.Seconds = RTC_ByteToBcd2(tm->tm_sec);
++
++	HAL_RTC_SetAlarm_IT(&dev->Handle, &salarmstructure, RTC_FORMAT_BCD);
++
++	alarmA_time.tm_year = tm->tm_year;
++	alarmA_time.tm_mon = tm->tm_mon;
++
++	alarm_callback = stm32_set_alarm_by_rtc_time_callback;
++	stm32_set_alarm_by_rtc_time_real_callback = callback;
++
++	return 0;
++}
++
++static int stm32_rtc_set_alarm_after_seconds(struct rtc_device *rtc, uint64_t seconds, void *callback)
++{
++	uint64_t alarm_second;
++	struct rtc_time tm;
++
++	stm32_rtc_read_tm(rtc, &tm);
++	stm32_rtc_tm_to_time(&tm, &alarm_second);
++
++	alarm_second += seconds;
++	stm32_rtc_time_to_tm(alarm_second, &tm);
++
++	stm32_set_alarm_by_rtc_time(rtc, &tm, callback);
++
++	return 0;
++}
++
++const struct rtc_class_ops rtc_stm32_ops = {
++		.read_time = stm32_rtc_read_tm,
++		.set_time = stm32_rtc_set_time,
++		.time_to_tm = stm32_rtc_time_to_tm,
++		.tm_to_time = stm32_rtc_tm_to_time,
++		.read_times = stm32_rtc_read_times,
++		.set_alarm_after_mseconds = stm32_rtc_set_alarm_after_mseconds,
++		.set_alarm_by_rtc_time = stm32_set_alarm_by_rtc_time,
++		.set_alarm_after_seconds = stm32_rtc_set_alarm_after_seconds,
++};
++
++static void Error_Handler(void)
++{
++	while(1)
++	{
++	}
++}
+diff --git a/src/mcu/drivers/rtc/rtc-stm32f4xx_msp.c b/src/mcu/drivers/rtc/rtc-stm32f4xx_msp.c
+new file mode 100644
+index 0000000..4c03f5f
+--- /dev/null
++++ b/src/mcu/drivers/rtc/rtc-stm32f4xx_msp.c
+@@ -0,0 +1,81 @@
++#include <common.h>
++#include <drivers/rtc.h>
++
++
++extern struct rtc_class_ops rtc_stm32_ops;
++
++/**
++ * @brief  This function is executed in case of error occurrence.
++ * @param  None
++ * @retval None
++ */
++static void Error_Handler(void)
++{
++	while(1)
++	{
++	}
++}
++
++void HAL_RTC_ALARM_MspInit(RTC_HandleTypeDef *Handle)
++{
++	RCC_OscInitTypeDef RCC_OscInitStruct;
++	RCC_PeriphCLKInitTypeDef PeriphClkInitStruct;
++
++	/******************-1- Configue LSI as RTC clock soucre *********************/
++	RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSI;
++	RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
++	RCC_OscInitStruct.LSIState = RCC_LSI_ON;
++
++	if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
++		Error_Handler();
++	}
++
++	PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_RTC;
++	PeriphClkInitStruct.RTCClockSelection = RCC_RTCCLKSOURCE_LSI;
++	if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK) {
++		Error_Handler();
++	}
++
++	/**********************-2- Enable RTC peripheral Clocks *********************/
++	/* Enable RTC Clock */
++	__HAL_RCC_RTC_ENABLE();
++
++	/******************-3- Configure the NVIC for RTC Alarm *********************/
++	HAL_NVIC_SetPriority(RTC_Alarm_IRQn, 0x00, 0);
++	HAL_NVIC_EnableIRQ(RTC_Alarm_IRQn);
++
++	if (HAL_RTC_Init(Handle) != HAL_OK) {
++		/* Error */
++		Error_Handler();
++	}
++}
++
++void HAL_RTC_MspPowerOff(RTC_HandleTypeDef *Handle)
++{
++	(void)Handle;
++}
++
++struct rtc_stm32_pm_ops rtc_pm_ops = {
++	.init     = HAL_RTC_ALARM_MspInit,
++	.poweroff = HAL_RTC_MspPowerOff,
++};
++
++void rtc_stm32_common_init(struct rtc_stm32_device *dev, struct rtc_stm32_pm_ops *pm_ops)
++{
++	struct rtc_time tm = {
++		.tm_year = STM32_DEFAULT_YEAR,
++		.tm_mon = STM32_DEFAULT_MON,
++		.tm_wday = STM32_DEFAULT_WDAY,
++		.tm_mday = STM32_DEFAULT_MDAY,
++		.tm_hour = STM32_DEFAULT_HOUR,
++		.tm_min = STM32_DEFAULT_MIN,
++		.tm_sec = STM32_DEFAULT_SEC,
++	};
++
++	dev->pm_ops	= pm_ops;
++	rtc_dev_init(&dev->device, &rtc_stm32_ops);
++	dev->pm_ops->init(&dev->Handle);
++	dev->device.ops->set_time(&dev->device, &tm);
++}
++
++
+diff --git a/src/mcu/framework/os/os_port_freertos.c b/src/mcu/framework/os/os_port_freertos.c
+index 467f1da..8180ebf 100644
+--- a/src/mcu/framework/os/os_port_freertos.c
++++ b/src/mcu/framework/os/os_port_freertos.c
+@@ -1,5 +1,10 @@
+ #include <stdint.h>
++#include <FreeRTOS.h>
++#include <task.h>
++#include <drivers/rtc.h>
+ 
++uint8_t stopmode_wkup = 0;
++static uint32_t ulTimerCountsForOneTick = 0;
+ 
+ void vApplicationIdleHook(void) {
+ 
+@@ -12,3 +17,94 @@ void PreSleepProcessing(uint32_t *ulExpectedIdleTime) {
+ void PostSleepProcessing(uint32_t *ulExpectedIdleTime) {
+ 	(void)ulExpectedIdleTime;
+ }
++
++void vPortSuppressTicksAndSleepAlarmCallback(void)
++{
++	stopmode_wkup = 1;
++	rtc_alarm_device.device.ops->set_alarm_after_mseconds(&rtc_alarm_device.device,
++				configTICK_RATE_HZ / 1000, vPortSuppressTicksAndSleepAlarmCallback);
++
++	(void) portSET_INTERRUPT_MASK_FROM_ISR();
++	{
++		/* Increment the RTOS tick. */
++		if (xTaskIncrementTick() != pdFALSE) {
++			/* A context switch is required.  Context switching is performed in
++			 the PendSV interrupt.  Pend the PendSV interrupt. */
++			portNVIC_INT_CTRL_REG = portNVIC_PENDSVSET_BIT;
++		}
++	}
++	portCLEAR_INTERRUPT_MASK_FROM_ISR(0);
++}
++
++void vPortSuppressTicksAndSleep( TickType_t xExpectedIdleTime )
++{
++	uint32_t pre_sub_second, now_sub_second;
++	uint64_t pre_times, now_times;
++	uint32_t ulCompleteTickPeriods;
++
++	__asm volatile( "cpsid i" );
++
++	/* If a context switch is pending or a task is waiting for the scheduler
++	 to be unsuspended then abandon the low power entry. */
++	if( eTaskConfirmSleepModeStatus() != eAbortSleep )
++	{
++		rtc_alarm_device.device.ops->read_times(&rtc_alarm_device.device, &pre_times, &pre_sub_second);
++		rtc_alarm_device.device.ops->set_alarm_after_mseconds(&rtc_alarm_device.device,
++				xExpectedIdleTime * configTICK_RATE_HZ / 1000,
++				vPortSuppressTicksAndSleepAlarmCallback);
++
++		__asm volatile( "cpsie i" );
++
++		/* enter the stop mode */
++		HAL_PWR_EnterSTOPMode(PWR_LOWPOWERREGULATOR_ON, PWR_STOPENTRY_WFI);
++
++		if( stopmode_wkup == 0 )
++		{
++			__asm volatile( "cpsid i" );
++
++			rtc_alarm_device.device.ops->read_times(&rtc_alarm_device.device, &now_times, &now_sub_second);
++
++			if(now_sub_second <= pre_sub_second) {
++				ulCompleteTickPeriods = (now_times - pre_times) * configTICK_RATE_HZ
++						+ (pre_sub_second - now_sub_second) / ulTimerCountsForOneTick;
++			} else {
++				ulCompleteTickPeriods = (now_times - pre_times - 1) * configTICK_RATE_HZ
++						+ (config_RTC_SSR_HZ - (now_sub_second - pre_sub_second)) / ulTimerCountsForOneTick;
++			}
++
++			rtc_alarm_device.device.ops->set_alarm_after_mseconds(&rtc_alarm_device.device,
++					configTICK_RATE_HZ / 1000,
++					vPortSuppressTicksAndSleepAlarmCallback);
++
++			__asm volatile( "cpsie i" );
++		} else {
++			stopmode_wkup = 0;
++			ulCompleteTickPeriods = xExpectedIdleTime - 1UL;
++		}
++
++		portENTER_CRITICAL();
++		{
++			vTaskStepTick(ulCompleteTickPeriods);
++		}
++		portEXIT_CRITICAL();
++	}
++
++	__asm volatile( "cpsie i" );
++}
++
++void vPortSetupTimerInterrupt( void )
++{
++	/* Calculate the constants required to configure the tick interrupt. */
++	__asm volatile( "cpsid i" );
++
++#if configUSE_TICKLESS_IDLE == 1
++	{
++		ulTimerCountsForOneTick = (config_RTC_SSR_HZ / configTICK_RATE_HZ);
++	}
++#endif
++
++	rtc_alarm_device.device.ops->set_alarm_after_mseconds(&rtc_alarm_device.device,
++			configTICK_RATE_HZ / 1000, vPortSuppressTicksAndSleepAlarmCallback);
++
++	__asm volatile( "cpsie i" );
++}
+diff --git a/src/mcu/include/configs/stm32f411xe_template.h b/src/mcu/include/configs/stm32f411xe_template.h
+index 3f2b169..365fef9 100644
+--- a/src/mcu/include/configs/stm32f411xe_template.h
++++ b/src/mcu/include/configs/stm32f411xe_template.h
+@@ -79,6 +79,7 @@
+ #define CONFIG_I2C   1
+ #define CONFIG_I2C_GPIO   1
+ #define CONFIG_SPI   1
++#define CONFIG_RTC	 1
+ 
+ /* add sensors */
+ #define CONFIG_BMP280 1
+diff --git a/src/mcu/include/drivers/rtc.h b/src/mcu/include/drivers/rtc.h
+new file mode 100644
+index 0000000..e2667b2
+--- /dev/null
++++ b/src/mcu/include/drivers/rtc.h
+@@ -0,0 +1,9 @@
++#ifndef _DEVICE_RTC_H_
++#define _DEVICE_RTC_H_
++
++#include <drivers/rtc_base.h>
++#include <drivers/rtc_stm32.h>
++
++extern struct rtc_stm32_device rtc_alarm_device;
++
++#endif /* _DEVICE_RTC_H_ */
+diff --git a/src/mcu/include/drivers/rtc_base.h b/src/mcu/include/drivers/rtc_base.h
+new file mode 100644
+index 0000000..97ccd03
+--- /dev/null
++++ b/src/mcu/include/drivers/rtc_base.h
+@@ -0,0 +1,46 @@
++#ifndef _DEVICE_RTC_BASE_H_
++#define _DEVICE_RTC_BASE_H_
++
++#include <os.h>
++
++struct rtc_device {
++	const struct rtc_class_ops *ops;
++};
++
++struct rtc_time {
++	uint32_t tm_sec;
++	uint32_t tm_min;
++	uint32_t tm_hour;
++	uint32_t tm_mday;
++	uint32_t tm_mon;
++	uint32_t tm_year;
++	uint32_t tm_wday;
++	uint32_t tm_yday;
++	uint32_t tm_isdst;
++};
++
++struct rtc_class_ops {
++	int (*test)(void);
++	int (*read_time)(struct rtc_device *rtc, struct rtc_time *tm);
++	int (*set_time)(struct rtc_device *rtc, struct rtc_time *tm);
++	void (*time_to_tm)(uint64_t time, struct rtc_time *tm);
++	int (*tm_to_time)(struct rtc_time *tm, uint64_t *time);
++	void (*read_times)(struct rtc_device *rtc, uint64_t *seconds, uint32_t *sub_second);
++	int (*set_alarm_after_mseconds)(struct rtc_device *rtc, uint64_t milliseconds, void *callback);
++	int (*set_alarm_by_rtc_time)(struct rtc_device *rtc, struct rtc_time *tm, void *callback);
++	int (*set_alarm_after_seconds)(struct rtc_device *rtc, uint64_t seconds, void *callback);
++};
++
++extern int rtc_read_time(struct rtc_device *rtc, struct rtc_time *tm);
++extern int rtc_set_time(struct rtc_device *rtc, struct rtc_time *tm);
++extern void rtc_time_to_tm(struct rtc_device *rtc, uint64_t time, struct rtc_time *tm);
++extern int rtc_tm_to_time(struct rtc_device *rtc, struct rtc_time *tm, uint64_t *time);
++extern void rtc_read_times(struct rtc_device *rtc, uint64_t *seconds, uint32_t *sub_second);
++extern int rtc_set_alarm_after_mseconds(struct rtc_device *rtc, uint64_t milliseconds, void *callback);
++extern int rtc_set_alarm_by_rtc_time(struct rtc_device *rtc, struct rtc_time *tm, void *callback);
++extern int rtc_set_alarm_after_seconds(struct rtc_device *rtc, uint64_t seconds, void *callback);
++extern void rtc_dev_init(struct rtc_device *device, struct rtc_class_ops *ops);
++
++extern int Rtc_Init();
++
++#endif /* _DEVICE_RTC_BASE_H_ */
+diff --git a/src/mcu/include/drivers/rtc_stm32.h b/src/mcu/include/drivers/rtc_stm32.h
+new file mode 100644
+index 0000000..8ecb9b7
+--- /dev/null
++++ b/src/mcu/include/drivers/rtc_stm32.h
+@@ -0,0 +1,34 @@
++#ifndef _DEVICE_RTC_STM32_H_
++#define _DEVICE_RTC_STM32_H_
++
++#include "stm32f4xx_hal.h"
++
++#define RTC_ASYNCH_PREDIV    0x0F
++#define RTC_SYNCH_PREDIV     0x7CF
++#define config_RTC_SSR_HZ	2000
++
++#define STM32_DEFAULT_YEAR	2016
++#define STM32_DEFAULT_MON	1
++#define STM32_DEFAULT_MDAY	1
++#define	STM32_DEFAULT_WDAY	5
++#define STM32_DEFAULT_HOUR	0
++#define STM32_DEFAULT_MIN	0
++#define STM32_DEFAULT_SEC	0
++
++struct rtc_stm32_pm_ops {
++	void (*init)(RTC_HandleTypeDef *Handle);
++	void (*poweroff)(RTC_HandleTypeDef *Handle);
++};
++
++struct rtc_stm32_device {
++	struct rtc_device		device; /*must be first*/
++	struct rtc_stm32_pm_ops	*pm_ops;
++	RTC_HandleTypeDef		Handle;
++	int pullmode;
++};
++
++extern struct rtc_stm32_pm_ops rtc_pm_ops;
++
++extern void rtc_stm32_common_init(struct rtc_stm32_device *dev, struct rtc_stm32_pm_ops *pm_ops);
++
++#endif /* _DEVICE_RTC_STM32_H_ */
+diff --git a/src/mcu/lib.mk b/src/mcu/lib.mk
+index 1a6aa37..0d4e79b 100644
+--- a/src/mcu/lib.mk
++++ b/src/mcu/lib.mk
+@@ -20,6 +20,7 @@ LIB-$(CONFIG_GPIO)  += drivers/gpio
+ LIB-$(CONFIG_UART)  += drivers/uart
+ LIB-$(CONFIG_I2C)   += drivers/i2c
+ LIB-$(CONFIG_SPI)   += drivers/spi
++LIB-$(CONFIG_RTC)   += drivers/rtc
+ LIB-y += drivers/sensors
+ 
+ # board
